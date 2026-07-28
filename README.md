@@ -37,6 +37,21 @@ The `email` crate (0.0.21, published 2016) cannot get out of its RFC5322 header 
 
 The lesson isn't "that bug should be fixed". It's this: **extracting six digits out of three SQLite databases and some plaintext files does not require a resident multi-threaded runtime with a MIME parser.** It is `sqlite3` and `grep`.
 
+## What it actually costs per day
+
+"0 while idle" is true but incomplete — the question that matters is **total burn per day**.
+One run costs **129 ms of CPU** (mean of 30 runs via `rusage`), peaking at 3.6 MB RSS.
+Multiply by wake count:
+
+| Scenario | Wakes/day | CPU-sec/day | % of one core | Basis |
+|---|---|---|---|---|
+| Typical personal use | 31 | 4.0 | 0.005% | ~10 messages/day × ~3 file writes each |
+| Heavy chat day | 500 | 64.5 | 0.075% | assume 500 write events |
+| **Hard ceiling** | **8640** | **1115** | **1.29%** | launchd throttles to ≥10s/run |
+| MessAuto, for contrast | — | **75946** | **87.9%** | resident, measured |
+
+**Even pinned at launchd's maximum firing rate, otp-sh burns 1115 CPU-seconds a day. MessAuto reaches that figure in 21 minutes.**
+
 ## How it works
 
 launchd's `WatchPaths` wakes a job when a watched file is written. So there is no watch loop to write — **the kernel does the waiting**.
