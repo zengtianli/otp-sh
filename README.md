@@ -45,12 +45,15 @@ Multiply by wake count:
 
 | Scenario | Wakes/day | CPU-sec/day | % of one core | Basis |
 |---|---|---|---|---|
-| Typical personal use | 31 | 4.0 | 0.005% | ~10 messages/day × ~3 file writes each |
+| **Measured** | 74 | 9.5 | 0.011% | 1 natural wake in a 19.5-min window, extrapolated |
 | Heavy chat day | 500 | 64.5 | 0.075% | assume 500 write events |
 | **Hard ceiling** | **8640** | **1115** | **1.29%** | launchd throttles to ≥10s/run |
 | MessAuto, for contrast | — | **75946** | **87.9%** | resident, measured |
 
 **Even pinned at launchd's maximum firing rate, otp-sh burns 1115 CPU-seconds a day. MessAuto reaches that figure in 21 minutes.**
+
+The measured row extrapolates from a 19.5-minute quiet window, which is not rigorous — wakes are bursty, not uniform.
+But it sits 117× below the ceiling, so wherever the true figure lands, the conclusion is unchanged.
 
 ## How it works
 
