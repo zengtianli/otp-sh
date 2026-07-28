@@ -1,0 +1,24 @@
+name: otp-sh
+summary: macOS 验证码自动填充,单个 POSIX sh 脚本 + launchd WatchPaths,空闲零进程零内存
+origin: own
+lifecycle: active
+form: cli
+bundle_id: null
+
+function: |
+  短信(chat.db) / 钉钉(通知中心库) / 邮件(.emlx) 三源验证码 → 剪贴板。
+  事件驱动:launchd WatchPaths 在被监视文件被写时唤醒作业,跑 0.16s 后退出。
+  替代 MessAuto —— 后者实测空闲烧 87.9% 单核(email crate RFC5322
+  解析器死循环),且卡住后邮件功能整个失效。
+
+key_scripts:
+  otp.sh: 主脚本。三个 scan_* 函数 + extract_code 抽取规则(在 238 条真实短信上量过)
+  install.sh: 装/卸。复制并 ad-hoc 签名私有 sh 副本以承载 TCC 身份,生成 launchd plist
+  test/run.sh: 16 条回归用例(抽取规则 + 邮件路径合成 fixture),不碰真实数据库
+
+depends_on: []   # 零第三方依赖;只用系统自带 sqlite3 / plutil / pbcopy / osascript
+
+notes: |
+  TCC 要点:权限记在实际 exec 的 Mach-O 上,脚本没有独立身份。所以授权对象是
+  $PREFIX/otp-shell(/bin/sh 的私有 ad-hoc 签名副本),不是 otp.sh,也不能是系统 /bin/sh。
+  测权限结论前先看 csrutil status —— SIP 关闭的机器上「不授权也能读」不可外推。

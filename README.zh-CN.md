@@ -1,0 +1,112 @@
+# otp-sh
+
+macOS 验证码自动填充，**一个 shell 脚本**。事件驱动，空闲时进程根本不存在。
+
+[English](README.md) · 中文
+
+短信 / 钉钉 / 邮件里的验证码，到达即进剪贴板。没有常驻进程、没有轮询循环、没有菜单栏图标、没有一行第三方依赖。
+
+```
+空闲：  0 个进程   0 MB 内存   0% CPU
+触发：  被唤醒 0.3s 后开跑，跑 0.16s，退出
+```
+
+## 为什么会有这个东西
+
+前身是 [MessAuto](https://github.com/LeeeSe/MessAuto)（Rust，3232 行，24 个依赖）。它做的事是对的，但常驻的代价在我这台 M4 上被实测抓了个正着：
+
+| | MessAuto 1.3.0 | otp-sh |
+|---|---|---|
+| 空闲 CPU | **87.9% 单核**（实测 30 秒采样） | 0%（没有进程） |
+| 累计烧掉 | 1514 分钟用户态 CPU / 37 小时运行 | — |
+| 常驻内存 | 19 MB | 0 |
+| 常驻线程 | 21（15 个 tokio worker + 2 个 fsevents loop） | 0 |
+| 代码量 | 3232 行 Rust | 216 行 POSIX sh |
+| 依赖 | 24 个 crate | 0 |
+
+那 87.9% 不是设计如此，是个 bug——`sample` 抓到 3005/3005 帧全部卡在同一个调用栈：
+
+```
+FileWatcher<EmailProcessor>::start → EmailProcessor::process_file
+  → email::MimeMessage::parse → Rfc5322Parser::consume_header
+      → consume_unstructured   2215 帧
+      → peek_linebreak          790 帧
+```
+
+`email` crate（0.0.21，2016 年）的 RFC5322 头解析器在某封 `.emlx` 上停不下来。更糟的是 `process_file` 是在 watch 循环里**同步**调的——所以从卡住那一刻起，邮件验证码功能整个是死的，一边失效一边烧着一个核。
+
+结论不是「这个 bug 该修」，而是：**为了从三个 SQLite 库和一堆明文文件里抠 6 位数字，不需要一个带 MIME 解析器的常驻多线程运行时。** 这活儿本来就是 `sqlite3` + `grep`。
+
+## 它怎么工作
+
+launchd 的 `WatchPaths` 会在被监视的文件被写入时唤醒作业。所以不需要自己写监听循环——**内核替你等**。
+
+```
+新短信到 → macOS 写 chat.db-wal → launchd 唤醒(实测 0.30s) → otp.sh 跑 0.16s → 退出
+```
+
+三个来源，一个作业，一份状态：
+
+| 来源 | 读什么 | 手法 |
+|---|---|---|
+| 信息 / iMessage | `~/Library/Messages/chat.db` | `sqlite3`，按 ROWID 增量 |
+| 钉钉 | `~/Library/Group Containers/group.com.apple.usernoted/db2/db` | `sqlite3` 取通知 BLOB → `plutil -extract req.body` |
+| 邮件 | `~/Library/Mail/V*/*/INBOX.mbox` | `find -newer` + 直接读明文（.emlx 本来就是明文，不需要 MIME 解析器） |
+
+## 抽取规则是量出来的
+
+在 238 条真实验证码短信上比过三种写法，结果反直觉：
+
+| 规则 | 结果 |
+|---|---|
+| **关键词闸门 + 首个 4-8 位数字** | 238/238 抽到，0 例可查证的选错 ← 采用 |
+| 只取「关键词之后」的数字 | 漏 21 条。`418657为本次登录验证的手机验证码` 这种码在关键词前面 |
+| 加宽泛的反上下文词表 | 误杀 5 条真码。`条` 命中「本条短信」、`账号` 命中「小米账号验证码」 |
+
+最简单的那个赢了。只额外保留一层极窄的屏蔽（紧跟 `尾号|订单|客服电话` 之后的数字先抹掉），它在这 238 条上命中 0 次，纯粹是给「订单 20260728 已发货，取件验证码 135790」这类形状留的保险。
+
+跑 `./test/run.sh` 看 16 条回归用例。
+
+## 装
+
+```sh
+git clone <repo> && cd otp-sh
+./install.sh
+```
+
+然后系统会要你做一件只有你能做的事：把 `~/.local/share/otp-sh/otp-shell` 加进**完全磁盘访问权限**（安装器会自动打开那个面板）。
+
+**为什么加的是 otp-shell 不是 otp.sh**：macOS 的 TCC 把权限记在实际 exec 的那个 Mach-O 上，脚本自己拿不到身份——一个 `#!/bin/sh` 脚本的权限身份是 `/bin/sh`。要是直接给系统 `/bin/sh` 开完全磁盘访问，机器上任何一个 shell 脚本就都能读你全盘了。所以安装器复制一份 `sh` 出来 ad-hoc 签名，只给这一份授权，爆炸半径就只有本工具。
+
+验证：
+
+```sh
+~/.local/share/otp-sh/otp-shell ~/.local/share/otp-sh/otp.sh --dry-run
+```
+
+卸：`./install.sh --uninstall`
+
+## 配
+
+`~/.config/otp-sh/config`，就是 sh 变量赋值：
+
+```sh
+MAX_AGE=180                    # 秒。超过这个岁数的消息一律不动
+SOURCES="sms dingtalk mail"    # 想关哪个删哪个
+AUTO_TYPE=0                    # 1 = 直接键入（需辅助功能权限）
+AUTO_ENTER=0                   # 1 = 键入后回车
+NOTIFY=1                       # 1 = 弹通知
+```
+
+`MAX_AGE` 那道闸不是可有可无的：launchd 在连续事件下会节流到 10 秒一次，作业也可能补跑。没有岁数上限的话，某次补跑会把几小时前的旧码悄悄塞进你的剪贴板。
+
+## 已知边界
+
+- **launchd 节流**：连续写入时同一作业最快 10 秒跑一次。孤立事件 0.3 秒响应；只有在你正好在狂聊天时收到验证码，才可能晚到 10 秒。
+- **验证码必须带关键词**（验证码 / code / OTP 等）。纯 `123456` 一个字没有的短信不会被处理——这是有意的，否则订单号、金额、房间号全会被抓。
+- **只看收件箱**，不扫归档和垃圾邮件。
+- **邮件按明文抓**，base64 编码的正文抓不到。绝大多数验证码邮件都带 `text/plain` 部分，所以实际影响很小；真要覆盖就得引 MIME 解析器，而那正是被替代掉的东西。
+
+## 许可
+
+MIT
