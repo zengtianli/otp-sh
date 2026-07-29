@@ -29,6 +29,28 @@ eval "$(sed -n '/^KEYWORDS=/,/^}/p;/^extract_code()/,/^}/p' otp.sh)"
 
 改完必跑 `./test/run.sh`(14 条),且新增规则要配**反向验证** —— 把该抓的 case 放回去确认真被拦下。
 
+## 钉钉这条线：不要再试文件监听（已量过）
+
+`WatchPaths` 底层是 **FSEvents**（`launchctl print` 里 `stream = com.apple.fsevents.matching`），
+而 FSEvents 对 `group.com.apple.usernoted` 容器**完全不上报**。四种监视目标逐个隔离实测，
+在 db-wal mtime 确实前进（inode 不变）的前提下，唤醒次数都是 **0**：
+
+| 目标 | 唤醒 |
+|---|---|
+| `db2/db-wal`、`db2/db`、`db2/db-shm`（文件） | 0 |
+| `db2/`（目录） | 0 |
+| `~/Library/Messages/chat.db-wal`（对照组） | 正常 |
+
+同一个坑 MessAuto 也踩过，注释写的是「FSEvents 对通知中心不可靠」——当时归因给了 Rust
+`notify` 库，其实 launchd 用的是同一套机制。**别再花时间找「哪个文件能监视」。**
+
+实时只剩轮询。最小查询实测 24.9 ms CPU/次 → 5s 间隔 0.498% 单核、10s 0.249%、30s 0.083%。
+（顺带:拿钉钉自己的 `log/` 目录当触发源确实能唤醒,但它一天写 10–30 MB 近乎连续,
+会把作业顶到 launchd 10s 节流上限,而那是跑**整个** otp.sh 129 ms —— 比轮询还贵,别走。）
+
+**加轮询之前必须先确认工作通知真的会进 `record` 表**（本机长期只有 1 条钉钉记录，且是群聊消息）。
+钉钉自己的库全部加密（非 SQLite 明文魔数），UI 辅助功能树为空（Qt 5.15 自绘）——两条替代路都堵死。
+
 ## TCC / 权限
 
 权限记在实际 exec 的 Mach-O 上,shell 脚本没有独立 TCC 身份。

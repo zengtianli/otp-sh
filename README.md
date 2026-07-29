@@ -4,7 +4,9 @@ macOS one-time-passcode autofill in **one shell script**. Event-driven — no pr
 
 English · [中文](README.zh-CN.md)
 
-Verification codes from SMS / DingTalk / Mail land in your clipboard the moment they arrive. No resident daemon, no polling loop, no menu-bar icon, no third-party dependency.
+Verification codes from SMS / Mail land in your clipboard the moment they arrive. No resident daemon, no polling loop, no menu-bar icon, no third-party dependency.
+
+> ⚠️ **The DingTalk source does not currently work.** The code is there but the job is never woken for it — a hard macOS limitation, measured below. SMS and Mail are verified end-to-end.
 
 ```
 idle:      0 processes   0 MB RAM   0% CPU
@@ -68,8 +70,42 @@ Three sources, one job, one state dir:
 | Source | Reads | Method |
 |---|---|---|
 | Messages / iMessage | `~/Library/Messages/chat.db` | `sqlite3`, incremental by ROWID |
-| DingTalk | `~/Library/Group Containers/group.com.apple.usernoted/db2/db` | `sqlite3` notification BLOB → `plutil -extract req.body` |
+| DingTalk ⚠️ | `~/Library/Group Containers/group.com.apple.usernoted/db2/db` | `sqlite3` notification BLOB → `plutil -extract req.body`. **No trigger exists** — see below |
 | Mail | `~/Library/Mail/V*/*/INBOX.mbox` | `find -newer` + read plaintext (`.emlx` *is* plaintext — no MIME parser needed) |
+
+## Why DingTalk doesn't work yet
+
+On macOS, `WatchPaths` is backed by **FSEvents, not kqueue** (`launchctl print` shows
+`stream = com.apple.fsevents.matching`). FSEvents is blind to the Notification Center container.
+
+Measured: while the notification DB was being written (`db-wal` mtime advancing, inode unchanged),
+each candidate watch target was tested in isolation —
+
+| Watch path | Wakes on notification |
+|---|---|
+| `…/usernoted/db2/db-wal` (file) | **0** |
+| `…/usernoted/db2/db` (file) | **0** |
+| `…/usernoted/db2/db-shm` (file) | **0** |
+| `…/usernoted/db2/` (directory) | **0** |
+| Control: `~/Library/Messages/chat.db-wal` | wakes normally |
+
+So this is not a misconfiguration — **there is no event to subscribe to.** The predecessor MessAuto hit
+the same wall and blamed the Rust `notify` crate; launchd uses the same mechanism underneath.
+
+That leaves polling. Cost, measured on this machine (24.9 ms CPU per minimal query):
+
+| Interval | Runs/day | Core-sec/day | % of one core |
+|---|---|---|---|
+| 5s | 17280 | 430 | 0.498% |
+| 10s | 8640 | 215 | 0.249% |
+| 30s | 2880 | 72 | 0.083% |
+
+Even at 5s that is still 177× cheaper than MessAuto — but it breaks the "zero processes while idle"
+claim, so it is **not shipped until DingTalk work-notifications are confirmed to reach the
+notification DB at all**. Measure first, then decide whether it earns the exception.
+
+(DingTalk's own message DBs are all encrypted, and its accessibility tree is empty — Qt custom-drawn.
+Both alternative routes are dead ends.)
 
 ## The extraction rule was measured, not guessed
 

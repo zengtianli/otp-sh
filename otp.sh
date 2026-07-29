@@ -139,7 +139,12 @@ scan_sms() {
 
 # ---- 来源 2：钉钉（通知中心）---------------------------------------------
 # 通知落在 usernoted 的 record 表，正文是 binary plist BLOB，取 req.body。
-# record 是易失表（送达后会被清），所以只能靠事件驱动即时读，轮询没有意义。
+#
+# ⚠️ 这条来源**没有触发源**。launchd WatchPaths 底层是 FSEvents，而 FSEvents 对
+# usernoted 容器完全不上报（db-wal / db / db-shm / 目录 四种目标各自隔离实测，
+# 通知写入后唤醒 0 次；chat.db-wal 对照组正常）。所以本函数只会在**别的来源**
+# 唤醒作业时搭便车跑一遍，不保证及时。别再试图给它配文件监听 —— 量过了，没有。
+# 要做实时只剩轮询一条路，代价见 README；在确认工作通知真会进 record 之前不加。
 scan_dingtalk() {
   _ndb="$HOME/Library/Group Containers/group.com.apple.usernoted/db2/db"
   [ -r "$_ndb" ] || { log "dingtalk: 通知库不可读"; return 1; }

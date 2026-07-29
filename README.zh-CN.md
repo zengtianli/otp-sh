@@ -4,7 +4,9 @@ macOS 验证码自动填充，**一个 shell 脚本**。事件驱动，空闲时
 
 [English](README.md) · 中文
 
-短信 / 钉钉 / 邮件里的验证码，到达即进剪贴板。没有常驻进程、没有轮询循环、没有菜单栏图标、没有一行第三方依赖。
+短信 / 邮件里的验证码，到达即进剪贴板。没有常驻进程、没有轮询循环、没有菜单栏图标、没有一行第三方依赖。
+
+> ⚠️ **钉钉这条来源目前不可用**，代码在但不会被独立唤醒。原因是 macOS 的一个硬限制，实测细节见[下面](#钉钉为什么还没通)。短信与邮件两条已端到端验证。
 
 ```
 空闲：  0 个进程   0 MB 内存   0% CPU
@@ -67,8 +69,39 @@ launchd 的 `WatchPaths` 会在被监视的文件被写入时唤醒作业。所�
 | 来源 | 读什么 | 手法 |
 |---|---|---|
 | 信息 / iMessage | `~/Library/Messages/chat.db` | `sqlite3`，按 ROWID 增量 |
-| 钉钉 | `~/Library/Group Containers/group.com.apple.usernoted/db2/db` | `sqlite3` 取通知 BLOB → `plutil -extract req.body` |
+| 钉钉 ⚠️ | `~/Library/Group Containers/group.com.apple.usernoted/db2/db` | `sqlite3` 取通知 BLOB → `plutil -extract req.body`。**无独立触发源**，见下 |
 | 邮件 | `~/Library/Mail/V*/*/INBOX.mbox` | `find -newer` + 直接读明文（.emlx 本来就是明文，不需要 MIME 解析器） |
+
+## 钉钉为什么还没通
+
+`WatchPaths` 在 macOS 上**底层走的是 FSEvents，不是 kqueue**（`launchctl print` 里可以看到
+`stream = com.apple.fsevents.matching`）。而 FSEvents 对通知中心那个容器是瞎的。
+
+实测：在通知库被写入（`db-wal` 的 mtime 确实前进、inode 不变）的同时，逐条隔离测四种监视目标——
+
+| 监视路径 | 通知写入后被唤醒 |
+|---|---|
+| `…/usernoted/db2/db-wal`（文件） | **0 次** |
+| `…/usernoted/db2/db`（文件） | **0 次** |
+| `…/usernoted/db2/db-shm`（文件） | **0 次** |
+| `…/usernoted/db2/`（目录） | **0 次** |
+| 对照：`~/Library/Messages/chat.db-wal` | 正常唤醒 |
+
+所以这不是「没调好」，是**没有事件可用**。同一个坑在前身 MessAuto 里也踩过，那边的注释写的是
+「实测 FSEvents 对通知中心不可靠」——当时以为是 Rust `notify` 库的毛病，其实 launchd 用的是同一套机制。
+
+剩下的路只有轮询，代价（本机实测，单次最小查询 24.9 ms CPU）：
+
+| 间隔 | 次/天 | 核·秒/天 | 占单核 |
+|---|---|---|---|
+| 5s | 17280 | 430 | 0.498% |
+| 10s | 8640 | 215 | 0.249% |
+| 30s | 2880 | 72 | 0.083% |
+
+轮询哪怕开到 5s，也还是比 MessAuto 省 177 倍。但它会让「空闲零进程」这句话不再成立，
+所以在**确认工作通知真的会进通知库之前，不加**——先量，再决定要不要为它破例。
+
+（钉钉自己的消息库全部加密，UI 的辅助功能树是空的（Qt 自绘），两条路都堵死。）
 
 ## 抽取规则是量出来的
 

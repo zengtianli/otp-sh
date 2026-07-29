@@ -42,11 +42,16 @@ WATCH=""
 add_watch() { [ -e "$1" ] && WATCH="$WATCH		<string>$1</string>
 "; }
 add_watch "$HOME/Library/Messages/chat.db-wal"
-add_watch "$HOME/Library/Group Containers/group.com.apple.usernoted/db2/db-wal"
 for mb in "$HOME"/Library/Mail/V*/*/INBOX.mbox; do add_watch "$mb"; done
 
+# 这里**故意没有**通知中心（钉钉）的路径。WatchPaths 底层是 FSEvents，
+# 而 FSEvents 对 group.com.apple.usernoted 容器完全不上报：db-wal / db / db-shm /
+# 容器目录四种目标逐个隔离实测，通知写入后唤醒次数都是 0（chat.db-wal 对照组正常）。
+# 加进去只会让 plist 看着像在监视、实际是死的。详见 README「钉钉为什么还没通」。
+# scan_dingtalk 仍会在别的来源唤醒作业时顺带跑一遍 —— 搭便车，不保证及时。
+
 if [ -z "$WATCH" ]; then
-  echo "没有找到任何可监视的路径（信息/钉钉/邮件都不在？）装不下去。" >&2
+  echo "没有找到任何可监视的路径（信息/邮件都不在？）装不下去。" >&2
   exit 1
 fi
 
